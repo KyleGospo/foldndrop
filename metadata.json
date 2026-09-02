@@ -1,0 +1,10 @@
+{
+  "uuid": "foldndrop@kylegospodneti.ch",
+  "name": "Fold n' Drop",
+  "description": "Fold windows out of the way mid-drag to drop onto the window underneath. Implements Pierre Dragicevic's fold-and-drop technique (UIST '04). Wayland only.",
+  "shell-version": ["50"],
+  "session-modes": ["user"],
+  "url": "https://github.com/kylegospo/gnome-shell-extension-foldndrop",
+  "settings-schema": "org.gnome.shell.extensions.foldndrop",
+  "version": 1
+}

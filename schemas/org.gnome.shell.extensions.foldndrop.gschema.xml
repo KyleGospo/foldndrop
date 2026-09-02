@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="foldndrop">
+  <schema id="org.gnome.shell.extensions.foldndrop"
+          path="/org/gnome/shell/extensions/foldndrop/">
+    <key name="transient-fold-timeout-ms" type="i">
+      <default>500</default>
+      <range min="100" max="2000"/>
+      <summary>Double-crossing timeout</summary>
+      <description>How long the lifted corner stays available to be confirmed by crossing back, in milliseconds.</description>
+    </key>
+    <key name="transient-fold-depth-px" type="i">
+      <default>48</default>
+      <range min="8" max="200"/>
+      <summary>Transient fold depth</summary>
+      <description>How deep the preview fold reaches into the window, in pixels.</description>
+    </key>
+    <key name="push-delta-px" type="i">
+      <default>1</default>
+      <range min="0" max="50"/>
+      <summary>Push clearance</summary>
+      <description>How far past the pointer a pushed fold line settles, in pixels.</description>
+    </key>
+    <key name="fold-rotation-lerp" type="d">
+      <default>0.1</default>
+      <range min="0.0" max="1.0"/>
+      <summary>Fold rotation rate</summary>
+      <description>How strongly a pushed fold line turns toward the direction of motion.</description>
+    </key>
+    <key name="discard-threshold" type="d">
+      <default>0.20</default>
+      <range min="0.0" max="0.5"/>
+      <summary>Discard threshold</summary>
+      <description>Fraction of a window that must remain visible before it is discarded.</description>
+    </key>
+    <key name="discard-enabled" type="b">
+      <default>true</default>
+      <summary>Allow discarding</summary>
+      <description>Whether pushing a fold far enough makes the window fade away for the rest of the drag.</description>
+    </key>
+    <key name="discard-fade-ms" type="i">
+      <default>200</default>
+      <range min="0" max="2000"/>
+      <summary>Discard fade duration</summary>
+      <description>How long a discarded window takes to fade out, in milliseconds.</description>
+    </key>
+    <key name="spring-back-ms" type="i">
+      <default>320</default>
+      <range min="0" max="2000"/>
+      <summary>Spring-back duration</summary>
+      <description>How long windows take to unfold when the drag ends, in milliseconds.</description>
+    </key>
+    <key name="post-drop-pause-ms" type="i">
+      <default>400</default>
+      <range min="0" max="3000"/>
+      <summary>Pause before springing back</summary>
+      <description>How long to hold the folded arrangement after a drop, so the result of the drop is visible.</description>
+    </key>
+    <key name="fold-shading-strength" type="d">
+      <default>0.35</default>
+      <range min="0.0" max="1.0"/>
+      <summary>Fold shading strength</summary>
+      <description>How much the folded flap darkens with distance from the crease.</description>
+    </key>
+    <key name="unfold-ms" type="i">
+      <default>300</default>
+      <range min="0" max="2000"/>
+      <summary>Unfold duration</summary>
+      <description>How long a fold takes to retract to its corner when you unfold it, in milliseconds.</description>
+    </key>
+    <key name="fold-flap-scale" type="d">
+      <default>0.8</default>
+      <range min="0.2" max="1.0"/>
+      <summary>Flap foreshortening</summary>
+      <description>How much the folded flap is squashed perpendicular to the crease. One is a flat mirror.</description>
+    </key>
+    <key name="fold-accent-strength" type="d">
+      <default>0.55</default>
+      <range min="0.0" max="1.0"/>
+      <summary>Accent tint strength</summary>
+      <description>How much of the desktop accent colour is mixed into the back of a folded window. Zero leaves it plain paper.</description>
+    </key>
+    <key name="fold-shadow-alpha" type="d">
+      <default>0.34</default>
+      <range min="0.0" max="1.0"/>
+      <summary>Fold shadow strength</summary>
+      <description>How dark the shadow the raised flap casts on what lies beneath it.</description>
+    </key>
+    <key name="fold-shadow-blur-px" type="i">
+      <default>26</default>
+      <range min="0" max="80"/>
+      <summary>Fold shadow blur</summary>
+      <description>How far the shadow the raised flap casts is blurred, in pixels. Zero gives a hard edge.</description>
+    </key>
+    <key name="fold-corner-radius-px" type="i">
+      <default>12</default>
+      <range min="0" max="40"/>
+      <summary>Fold corner radius</summary>
+      <description>The corner radius of the folded flap, in pixels. Match this to the rounding GNOME gives window corners.</description>
+    </key>
+  </schema>
+</schemalist>
