@@ -830,3 +830,66 @@ describe('session: the restore always finishes', () => {
         }
     });
 });
+
+describe('session: a window thins out before it is discarded', () => {
+    const fadeOf = (desc, id) => desc.find(w => w.id === id).fade;
+
+    it('reports full strength for a window that is not folded', () => {
+        const s = new Session();
+        const desc = s.begin(WINDOWS, vec(100, 50), 0);
+        assertEqual(desc.map(w => w.fade), [1, 1]);
+    });
+
+    it('thins the window out as the fold is pushed deeper', () => {
+        const s = new Session();
+        s.begin(WINDOWS, vec(100, 50), 0);
+        doubleCross(s, 0);
+        let t = 60;
+        let last = 1;
+        let sawPartial = false;
+        for (let x = 150; x >= 0; x -= 5) {
+            t += 16;
+            const desc = s.updatePointer(vec(x, 50), t);
+            if (stateOf(desc, 'over') !== FOLDED)
+                break;
+            const now = fadeOf(desc, 'over');
+            assert(now <= last + 1e-9, `fade rose from ${last} to ${now} at x=${x}`);
+            if (now > 0 && now < 1)
+                sawPartial = true;
+            last = now;
+        }
+        assert(sawPartial, 'the window never faded, it went straight from solid to gone');
+        /* And by the point it is dropped it is already nearly invisible, which
+         * is what stops the discard reading as a window blinking out. */
+        assertEqual(stateOf(s.describe(), 'over'), DISCARDED);
+        assert(last < 0.25, `still ${last} solid when it was discarded`);
+    });
+
+    it('stays solid all the way down when discarding is switched off', () => {
+        const s = new Session({ discardEnabled: false });
+        s.begin(WINDOWS, vec(100, 50), 0);
+        doubleCross(s, 0);
+        let t = 60;
+        for (let x = 150; x >= 0; x -= 5)
+            s.updatePointer(vec(x, 50), t += 16);
+        /* Nothing is ever going to remove it, so fading it to nothing would
+         * leave an invisible window sitting on screen. */
+        assertEqual(fadeOf(s.describe(), 'over'), 1);
+    });
+
+    it('comes back to full strength as the fold unwinds', () => {
+        const s = new Session();
+        s.begin(WINDOWS, vec(100, 50), 0);
+        doubleCross(s, 0);
+        let t = 60;
+        for (let x = 150; x >= 0; x -= 5)
+            s.updatePointer(vec(x, 50), t += 16);
+        assertEqual(stateOf(s.describe(), 'over'), DISCARDED);
+        s.hold();
+        s.beginRestore(t += 16);
+        assert(fadeOf(s.describe(), 'over') < 0.25, 'revived at full strength');
+        const done = s.tick(t + DEFAULT_CONFIG.restoreMs + 50);
+        assertEqual(stateOf(done, 'over'), NORMAL);
+        assertEqual(fadeOf(done, 'over'), 1);
+    });
+});

@@ -3,7 +3,7 @@ import { describe, it, assert, assertEqual, assertClose, assertVecClose } from '
 import { vec, makeLine, normalize, signedDistance, rectEdges } from '../src/core/geometry.js';
 import {
     NORMAL, TRANSIENT, FOLDED, DISCARDED,
-    anchorFoldLine, pushFoldLine, visibleFraction, foldPaintBounds,
+    anchorFoldLine, pushFoldLine, visibleFraction, foldPaintBounds, foldFade,
     cornerFor, cornerDistance, lineAtCornerDistance,
     maxCornerDistance, liftDistance, cornerLiftNormal,
 } from '../src/core/fold.js';
@@ -233,3 +233,44 @@ describe('fold: corner lift normal', () => {
     });
 });
 
+
+describe('fold: fading out as the fold swallows the window', () => {
+    const at = fraction => {
+        /* A vertical crease leaving `fraction` of RECT on the kept side. */
+        const line = makeLine(vec(RECT.width * fraction, 0), vec(1, 0));
+        assertClose(visibleFraction(RECT, line), fraction, 1e-9);
+        return foldFade(RECT, line, 0.2);
+    };
+
+    it('is solid while most of the window is still there', () => {
+        assertClose(at(0.9), 1);
+        assertClose(at(0.5), 1);
+    });
+
+    it('is nearly gone by the time the window is discarded', () => {
+        /* The reference reaches 0.12 at the point it gives up and hides the
+         * frame, so the discard lands on something already almost invisible.
+         * Anything higher here and the window blinks out. */
+        assertClose(at(0.2), 0.12, 1e-9);
+    });
+
+    it('falls away smoothly between the two', () => {
+        let last = at(0.5);
+        for (let f = 0.49; f >= 0.2; f -= 0.01) {
+            const now = at(f);
+            assert(now < last + 1e-9, `fade rose from ${last} to ${now} at ${f}`);
+            assert(last - now < 0.06, `fade jumped ${last - now} at ${f}`);
+            last = now;
+        }
+    });
+
+    it('bottoms out rather than going negative', () => {
+        assertClose(at(0.1), 0);
+        assertClose(at(0.02), 0);
+    });
+
+    it('stays solid when there is no threshold to fade toward', () => {
+        assertClose(foldFade(RECT, makeLine(vec(20, 0), vec(1, 0)), 0), 1);
+        assertClose(foldFade(RECT, null, 0.2), 1);
+    });
+});

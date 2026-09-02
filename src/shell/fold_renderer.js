@@ -99,6 +99,7 @@ export class FoldRenderer {
             contentOrigin: { x: win.rect.x - ax, y: win.rect.y - ay },
             contentSize: { width: win.rect.width, height: win.rect.height },
             line: this._toLocal(win.line, ax, ay),
+            fade: win.fade ?? 1,
             ...this._appearance(entry),
         });
         entry.mode = TRANSIENT;
@@ -173,6 +174,9 @@ export class FoldRenderer {
             contentOrigin: { x: win.rect.x - cx, y: win.rect.y - cy },
             contentSize: { width: win.rect.width, height: win.rect.height },
             line: this._toLocal(win.line, cx, cy),
+            /* Thins out as the fold swallows the window, so it is nearly gone
+             * by the time it is discarded rather than blinking out solid. */
+            fade: win.fade ?? 1,
             ...look,
         });
 

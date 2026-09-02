@@ -12,7 +12,7 @@ import {
     NORMAL, TRANSIENT, FOLDED, DISCARDED,
     anchorFoldLine, pushFoldLine, visibleFraction,
     cornerLiftNormal, lineAtCornerDistance, liftDistance, cornerDistance,
-    foldReaches,
+    foldReaches, foldFade,
 } from './fold.js';
 import { evaluate, makeAnimation, PRESETS } from './animation.js';
 import { makeEdgeBoundaries, makeFoldBoundary, findCrossings } from './crossing.js';
@@ -243,8 +243,26 @@ export class Session {
     describe() {
         return this.order.map(id => {
             const win = this.states.get(id);
-            return { id: win.id, rect: win.rect, state: win.state, line: win.line };
+            return {
+                id: win.id,
+                rect: win.rect,
+                state: win.state,
+                line: win.line,
+                /* How solid the window should look. Falls away as the fold
+                 * swallows it, so it is nearly gone by the time it is
+                 * discarded rather than blinking out at full strength. */
+                fade: this._fade(win),
+            };
         });
+    }
+
+    /* Only fades toward a discard that is actually going to happen: with
+     * discarding switched off a deep fold stays solid rather than thinning to
+     * nothing and then staying on screen. */
+    _fade(win) {
+        if (!this.config.discardEnabled || win.state !== FOLDED)
+            return 1;
+        return foldFade(win.rect, win.line, this.config.discardThreshold);
     }
 
     _apply(intent, from, to, timeMs) {

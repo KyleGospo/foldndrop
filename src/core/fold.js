@@ -167,6 +167,27 @@ export function visibleFraction(rect, line) {
     return polygonArea(clipPolygonByLine(rectCorners(rect), line)) / total;
 }
 
+/* How solid a window still looks as its fold swallows it.
+ *
+ * The reference fades a window out continuously as the fold deepens, reaching
+ * 0.12 by the point it gives up and hides the frame — so what the eye sees is
+ * a window thinning away, and the moment it is dropped is already invisible.
+ * Holding full opacity until the threshold and only then starting a timed fade
+ * makes the window vanish instead, because the discard lands while it is still
+ * completely solid.
+ *
+ * The curve is the reference's, with its hard-coded 0.2 replaced by whatever
+ * the discard threshold has been set to, so moving one moves the other. */
+const FADE_GAIN = 0.6;
+const FADE_FLOOR = 0.8;
+
+export function foldFade(rect, line, threshold) {
+    if (!line || !(threshold > 0))
+        return 1;
+    const fade = FADE_GAIN * (visibleFraction(rect, line) / threshold - FADE_FLOOR);
+    return Math.min(1, Math.max(0, fade));
+}
+
 /* Does a crease drawn across `rect` reach `other`?
  *
  * A fold only carries the windows its crease actually runs through. This is

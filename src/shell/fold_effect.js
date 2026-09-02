@@ -50,6 +50,11 @@ uniform vec3 uBorder;
 uniform float uShadowAlpha;
 uniform float uShadowBlur;
 uniform float uCornerRadius;
+/* How solid the fold is, from the core: it thins out as the fold swallows
+ * the window. */
+uniform float uFade;
+/* The actor's own paint opacity, sampled each frame in vfunc_paint_target. */
+uniform float uActorOpacity;
 uniform float uEnabled;
 
 /* Width of the darker rim around the flap, matching the reference's 5 px
@@ -179,6 +184,11 @@ if (uEnabled > 0.5) {
          * sheet's blank back, not the window's pixels mirrored, exactly as in
          * the reference. That is what makes it read as the underside of a page
          * rather than as a reflection. */
+        /* The window and the shadow on it fade faster than the flap does —
+         * squared against linear, as in the reference — so the back of the
+         * sheet stays readable while what it is covering goes. */
+        result *= uFade * uFade;
+
         vec2 flapSample = p - (1.0 + 1.0 / uFlapScale) * s * uFoldNormal;
         float flap = contentCoverage(flapSample, 0.0);
         if (flap > 0.0) {
@@ -188,10 +198,20 @@ if (uEnabled > 0.5) {
             colour *= 1.0 - uShading * clamp(depth / span, 0.0, 1.0);
             colour *= 1.0 + CREASE_HIGHLIGHT * exp(-depth / CREASE_FALLOFF_PX);
             /* Premultiplied, so an opaque colour mixes by coverage directly. */
-            result = mix(result, vec4(colour, 1.0), flap);
+            result = mix(result, vec4(colour, 1.0) * uFade, flap);
         }
     }
-    cogl_color_out = result;
+    /* Everything above is premultiplied, so scaling the whole vector scales
+     * the coverage with it.
+     *
+     * This is the only thing that makes an opacity animation on the actor
+     * visible at all. Our snippet is Cogl's post string, and by then
+     * cogl_color_out already holds the generated fragment — texture times the
+     * pipeline colour, which is where Clutter puts paint opacity. Overwriting
+     * it, as this does, threw that away: every ease on the fold's opacity was
+     * silently doing nothing, so a discarded window blinked out rather than
+     * fading. */
+    cogl_color_out = result * uActorOpacity;
 }
 `;
 
@@ -202,6 +222,12 @@ class FoldEffect extends Shell.GLSLEffect {
     }
 
     vfunc_paint_target(...params) {
+        /* Read per paint rather than per setFold: Clutter drives an opacity
+         * ease itself, without telling us, so sampling it anywhere else would
+         * miss every frame of the animation. */
+        const actor = this.get_actor();
+        this.set_uniform_float(this.get_uniform_location('uActorOpacity'), 1,
+            [actor ? actor.get_paint_opacity() / 255 : 1]);
         this.get_pipeline().set_blend(PREMULTIPLIED_OVER);
         super.vfunc_paint_target(...params);
     }
@@ -209,7 +235,7 @@ class FoldEffect extends Shell.GLSLEffect {
     setFold({
         size, contentOrigin, contentSize, line, shading,
         flapScale = 1.0, panel, border, shadowAlpha, shadowBlur = 0,
-        cornerRadius = 0,
+        cornerRadius = 0, fade = 1,
     }) {
         this.set_uniform_float(this.get_uniform_location('uSize'), 2, [size.width, size.height]);
         this.set_uniform_float(this.get_uniform_location('uContentOrigin'), 2,
@@ -226,6 +252,7 @@ class FoldEffect extends Shell.GLSLEffect {
         this.set_uniform_float(this.get_uniform_location('uShadowAlpha'), 1, [shadowAlpha]);
         this.set_uniform_float(this.get_uniform_location('uShadowBlur'), 1, [shadowBlur]);
         this.set_uniform_float(this.get_uniform_location('uCornerRadius'), 1, [cornerRadius]);
+        this.set_uniform_float(this.get_uniform_location('uFade'), 1, [fade]);
 
         if (line) {
             this.set_uniform_float(this.get_uniform_location('uFoldPoint'), 2,
