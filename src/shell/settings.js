@@ -30,6 +30,15 @@ const PAPER = {
     dark: { panel: 0.24, border: 0.42 },
 };
 
+/* A dark desktop wants the accent muted: libadwaita's accents are picked to
+ * sit on light chrome, and at full strength the flap glows against everything
+ * around it. Thirty percent off puts it back in the scheme. */
+const DARK_ACCENT_DIM = 0.7;
+
+function darken(accent, k) {
+    return { r: accent.r * k, g: accent.g * k, b: accent.b * k };
+}
+
 function mix(base, accent, k) {
     return {
         r: base + (accent.r - base) * k,
@@ -85,7 +94,7 @@ export class Settings {
             return this._flap;
         const dark = this._interface.get_string('color-scheme') === 'prefer-dark';
         const paper = dark ? PAPER.dark : PAPER.light;
-        const accent = this._accent();
+        const accent = dark ? darken(this._accent(), DARK_ACCENT_DIM) : this._accent();
         const strength = this._settings.get_double('fold-accent-strength');
         this._flap = {
             panel: mix(paper.panel, accent, strength),
