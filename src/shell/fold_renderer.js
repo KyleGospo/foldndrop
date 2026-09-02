@@ -3,9 +3,15 @@
  *
  * Draws what the core describes.
  *
+ * Every clone is stacked directly over the window actor it came from, so the
+ * drawing order is the desktop's own stacking order. Parking them all in one
+ * overlay on top of window_group instead put a folded window above windows
+ * that were stacked over it, which looks exactly like the window raising
+ * itself, and made clone-versus-clone order depend on which was folded first.
+ *
  *   TRANSIENT — effect on the real actor, which stays visible and reactive.
  *               It is only a preview; the window must still accept a drop.
- *   FOLDED    — real actor hidden, a clone drawn in our overlay. Hiding the
+ *   FOLDED    — real actor hidden, a clone drawn in its place. Hiding the
  *               actor takes it out of Clutter picking, so the pointer and the
  *               drop fall through to the window underneath. That is the whole
  *               mechanism.
@@ -31,7 +37,8 @@ const SHADOW_REACH = 1.5;
 export class FoldRenderer {
     constructor(settings) {
         this._settings = settings;
-        this._overlay = null;
+        /* A drag is in progress and sync() has windows to draw. */
+        this._active = false;
         this._entries = new Map();   // id -> {actor, container, clone, effect, mode}
         this._hidden = new Set();
         this._pendingDone = null;
@@ -39,8 +46,7 @@ export class FoldRenderer {
 
     begin(windows) {
         this.restoreAll();
-        this._overlay = new Clutter.Actor({ reactive: false });
-        global.window_group.add_child(this._overlay);
+        this._active = true;
         for (const win of windows)
             this._entries.set(win.id, {
                 actor: win.actor,
@@ -50,7 +56,7 @@ export class FoldRenderer {
     }
 
     sync(description) {
-        if (!this._overlay)
+        if (!this._active)
             return;
         for (const win of description) {
             const entry = this._entries.get(win.id);
@@ -145,10 +151,10 @@ export class FoldRenderer {
             entry.container = new Clutter.Actor({ reactive: false });
             entry.clone = new Clutter.Clone({ source: entry.actor, reactive: false });
             entry.container.add_child(entry.clone);
-            this._overlay.add_child(entry.container);
             entry.effect = new FoldEffect();
             entry.container.add_effect_with_name(EFFECT_NAME, entry.effect);
         }
+        this._restack(entry);
 
         entry.container.set_position(cx, cy);
         entry.container.set_size(cw, ch);
@@ -193,6 +199,30 @@ export class FoldRenderer {
             });
         }
         entry.mode = DISCARDED;
+    }
+
+    /* Keep the clone immediately above the window actor it stands in for, so a
+     * folded window draws exactly where the real one would have.
+     *
+     * Re-checked every frame rather than set once: Mutter reorders
+     * window_group whenever the real stack changes, and it has no reason to
+     * keep a foreign actor of ours in place when it does. The comparison is
+     * what makes that cheap — restacking unconditionally would queue a
+     * relayout for every folded window on every frame. */
+    _restack(entry) {
+        /* The actor's own parent, not window_group by name: a window the user
+         * has set to stay on top lives in top_window_group instead, and a
+         * clone left behind in window_group would be drawn under everything it
+         * is supposed to be part of. */
+        const parent = entry.actor.get_parent();
+        if (!parent)
+            return;
+        if (entry.container.get_parent() !== parent) {
+            entry.container.get_parent()?.remove_child(entry.container);
+            parent.add_child(entry.container);
+        }
+        if (entry.container.get_previous_sibling() !== entry.actor)
+            parent.set_child_above_sibling(entry.container, entry.actor);
     }
 
     /* Everything about how a fold looks rather than where it is. Shared so a
@@ -277,10 +307,7 @@ export class FoldRenderer {
         for (const actor of [...this._hidden])
             this._show(actor);
         this._hidden.clear();
-        if (this._overlay) {
-            this._overlay.destroy();
-            this._overlay = null;
-        }
+        this._active = false;
         /* Whichever path completed the cleanup owns firing onDone, so it fires
          * exactly once whether the spring-back ran to completion or was cut
          * short by begin()/destroy(). */

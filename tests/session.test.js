@@ -893,3 +893,48 @@ describe('session: a window thins out before it is discarded', () => {
         assertEqual(fadeOf(done, 'over'), 1);
     });
 });
+
+describe('session: stacking order is fixed for the whole drag', () => {
+    it('never reorders the windows it was given, whatever the drag does', () => {
+        const stack = [
+            { id: 'a', rect: { x: 0, y: 0, width: 320, height: 240 } },
+            { id: 'b', rect: { x: 80, y: 40, width: 300, height: 260 } },
+            { id: 'c', rect: { x: 40, y: 100, width: 400, height: 200 } },
+        ];
+        const expected = ['a', 'b', 'c'];
+        let seed = 4242;
+        const rand = () => {
+            seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+            return seed / 0x7fffffff;
+        };
+        const s = new Session();
+        let t = 0;
+        assertEqual(s.begin(stack, vec(160, 120), t).map(w => w.id), expected);
+        /* Folding, cascading, discarding and unfolding all leave the order
+         * alone: it is the drawing order the renderer stacks the clones by, so
+         * a window that changed places here would look like it had raised
+         * itself over its neighbours. */
+        for (let i = 0; i < 300; i++) {
+            t += 16;
+            assertEqual(s.updatePointer(vec(rand() * 520 - 60, rand() * 400 - 60), t)
+                .map(w => w.id), expected, `order changed at step ${i}`);
+        }
+        s.hold();
+        assertEqual(s.describe().map(w => w.id), expected);
+        s.beginRestore(t += 16);
+        for (let i = 0; i < 60; i++)
+            assertEqual(s.tick(t += 16).map(w => w.id), expected,
+                `order changed while restoring, step ${i}`);
+    });
+
+    it('keeps the rest in order when a window goes away mid-drag', () => {
+        const s = new Session();
+        s.begin([
+            { id: 'a', rect: { x: 0, y: 0, width: 200, height: 200 } },
+            { id: 'b', rect: { x: 0, y: 0, width: 200, height: 200 } },
+            { id: 'c', rect: { x: 0, y: 0, width: 200, height: 200 } },
+        ], vec(100, 100), 0);
+        s.removeWindow('b');
+        assertEqual(s.describe().map(w => w.id), ['a', 'c']);
+    });
+});
