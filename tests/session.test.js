@@ -938,3 +938,80 @@ describe('session: stacking order is fixed for the whole drag', () => {
         assertEqual(s.describe().map(w => w.id), ['a', 'c']);
     });
 });
+
+/* Folding a window is only half of the technique: the drop has to land on the
+ * window underneath, and the part still lying flat has to go on taking drops
+ * itself. The description says which of the two the pointer is over, as a
+ * boolean rather than a region, because that is all the renderer can act on —
+ * Clutter picks whole actors, and the pointer is the only place the question
+ * is ever asked. */
+describe('session: what still takes the pointer', () => {
+    const takesPointer = (desc, id) => desc.find(w => w.id === id).acceptsPointer;
+
+    /* A small window resting on a large one. Leaving the small one never
+     * leaves the large one, so only the window on top ever folds and the one
+     * underneath is there to catch the drop. */
+    const RESTING = [
+        { id: 'under', rect: { x: 0, y: 0, width: 400, height: 300 } },
+        { id: 'over', rect: { x: 0, y: 0, width: 200, height: 100 } },
+    ];
+
+    /* Out through `over`'s right edge and straight back in. */
+    function foldOver(s) {
+        s.updatePointer(vec(100, 50), 0);
+        s.updatePointer(vec(260, 50), 20);
+        return s.updatePointer(vec(150, 50), 60);
+    }
+
+    it('leaves an unfolded window taking the pointer', () => {
+        const s = new Session();
+        const desc = s.begin(WINDOWS, vec(100, 50), 0);
+        assertEqual(desc.map(w => w.acceptsPointer), [true, true]);
+    });
+
+    it('leaves a lifted corner taking the pointer, since it is only a preview', () => {
+        const s = new Session();
+        s.begin(RESTING, vec(100, 50), 0);
+        s.updatePointer(vec(100, 50), 0);
+        const desc = s.updatePointer(vec(260, 50), 20);
+        assertEqual(stateOf(desc, 'over'), TRANSIENT);
+        assert(takesPointer(desc, 'over'), 'a lift must not redirect the drop');
+    });
+
+    it('takes it away where the fold has swallowed the window', () => {
+        const s = new Session();
+        s.begin(RESTING, vec(100, 50), 0);
+        const desc = foldOver(s);
+        assertEqual(stateOf(desc, 'over'), FOLDED);
+        /* The crease is anchored just behind the pointer, so the pointer is
+         * over the folded-away side. This is the redirection the whole
+         * technique exists for. */
+        assert(!takesPointer(desc, 'over'), 'the folded-away side belongs to the window below');
+        assert(takesPointer(desc, 'under'), 'which has to be there to catch it');
+    });
+
+    it('keeps it on the part still lying flat', () => {
+        const s = new Session();
+        s.begin(RESTING, vec(100, 50), 0);
+        foldOver(s);
+        /* Around the crease rather than through it — crossing it would push
+         * the fold — and back into the part of `over` still lying flat. */
+        s.updatePointer(vec(150, 150), 80);
+        s.updatePointer(vec(20, 150), 100);
+        const desc = s.updatePointer(vec(20, 50), 120);
+        assertEqual(stateOf(desc, 'over'), FOLDED);
+        assert(takesPointer(desc, 'over'), 'the flat part is still the window');
+    });
+
+    it('takes it away from a window the fold swallowed entirely', () => {
+        const s = new Session();
+        s.begin(WINDOWS, vec(100, 50), 0);
+        doubleCross(s, 0);
+        let desc = s.describe();
+        let t = 100;
+        for (let x = 140; x >= 0 && stateOf(desc, 'over') !== DISCARDED; x -= 10)
+            desc = s.updatePointer(vec(x, 50), t += 20);
+        assertEqual(stateOf(desc, 'over'), DISCARDED);
+        assert(!takesPointer(desc, 'over'), 'a window that is gone takes nothing');
+    });
+});

@@ -11,14 +11,16 @@
  *
  *   TRANSIENT — effect on the real actor, which stays visible and reactive.
  *               It is only a preview; the window must still accept a drop.
- *   FOLDED    — real actor hidden, a clone drawn in its place. Hiding the
- *               actor takes it out of Clutter picking, so the pointer and the
- *               drop fall through to the window underneath. That is the whole
- *               mechanism.
- *   DISCARDED — clone faded out, real actor still hidden.
+ *   FOLDED    — a clone draws the fold; the real actor is left in place at
+ *               zero opacity so that it goes on being what Clutter picks.
+ *               Only where the pointer is over the folded-away part is it
+ *               taken out of the pick, and then the drop falls through to the
+ *               window underneath. That is the whole mechanism.
+ *   DISCARDED — clone faded out, real actor gone from the pick entirely.
  *
- * The one way this file can do lasting harm is leaving a real actor hidden,
- * so every hidden actor goes in _hidden and restoreAll() is idempotent.
+ * The two ways this file can do lasting harm are leaving a real actor hidden
+ * and leaving one transparent, so every actor it hides goes in _hidden, every
+ * actor it dims goes in _dimmed, and restoreAll() is idempotent.
  */
 'use strict';
 
@@ -41,6 +43,7 @@ export class FoldRenderer {
         this._active = false;
         this._entries = new Map();   // id -> {actor, container, clone, effect, mode}
         this._hidden = new Set();
+        this._dimmed = new Map();    // actor -> the opacity it had before we dimmed it
         this._pendingDone = null;
     }
 
@@ -82,12 +85,14 @@ export class FoldRenderer {
     _toNormal(entry) {
         this._dropClone(entry);
         this._dropInPlaceEffect(entry);
+        this._undim(entry.actor);
         this._show(entry.actor);
         entry.mode = NORMAL;
     }
 
     _toInPlace(entry, win) {
         this._dropClone(entry);
+        this._undim(entry.actor);
         this._show(entry.actor);
         if (!entry.effect || entry.mode !== TRANSIENT) {
             entry.actor.remove_effect_by_name(EFFECT_NAME);
@@ -123,7 +128,8 @@ export class FoldRenderer {
         }
         this._dropInPlaceEffect(entry);
         const wasDiscarded = entry.mode === DISCARDED;
-        this._hide(entry.actor);
+        this._dim(entry.actor);
+        this._setPickable(entry, win.acceptsPointer);
 
         const [aw, ah] = entry.actor.get_size();
         const [ax, ay] = entry.actor.get_position();
@@ -190,6 +196,7 @@ export class FoldRenderer {
     }
 
     _toDiscarded(entry) {
+        this._dim(entry.actor);
         this._hide(entry.actor);
         if (entry.container && entry.mode !== DISCARDED) {
             entry.container.ease({
@@ -290,6 +297,7 @@ export class FoldRenderer {
          * unmanaged; a later restoreAll() calling show() on a destroyed actor
          * would warn or throw. */
         this._hidden.delete(entry.actor);
+        this._dimmed.delete(entry.actor);
         this._entries.delete(id);
     }
 
@@ -307,6 +315,12 @@ export class FoldRenderer {
         for (const actor of [...this._hidden])
             this._show(actor);
         this._hidden.clear();
+        /* Unconditionally, unlike the showing above: a window that has been
+         * minimized mid-drag is one we must not show, but it is emphatically
+         * still one we must not leave invisible when it is unminimized. */
+        for (const actor of [...this._dimmed.keys()])
+            this._undim(actor);
+        this._dimmed.clear();
         this._active = false;
         /* Whichever path completed the cleanup owns firing onDone, so it fires
          * exactly once whether the spring-back ran to completion or was cut
@@ -322,11 +336,56 @@ export class FoldRenderer {
         this._settings = null;
     }
 
+    /* Which side of the crease the pointer is on decides whether a folded
+     * window is still the thing under it.
+     *
+     * Clutter picks whole actors, so a fold cannot be handed to it as a
+     * region — but it does not have to be. The only place anything ever asks
+     * is under the pointer, and the core has already answered for exactly
+     * that point. So the actor stays in the pick while the pointer is over
+     * the part of the window still lying flat, which is what lets that part
+     * go on taking drops, and drops out of it over the part that has been
+     * folded away, which is what sends the drop to the window underneath.
+     *
+     * Hiding is the only lever there is: reactivity would have to be set on
+     * every surface actor Mutter has nested inside the window actor, and it
+     * puts them there and takes them away as the client pleases. */
+    _setPickable(entry, pickable) {
+        if (pickable)
+            this._show(entry.actor);
+        else
+            this._hide(entry.actor);
+    }
+
     _hide(actor) {
         if (this._hidden.has(actor))
             return;
         this._hidden.add(actor);
         actor.hide();
+    }
+
+    /* Out of the picture without being out of the pick.
+     *
+     * A folded window is drawn by its clone, so the real actor must not paint
+     * — but hiding it, which is the obvious way to arrange that, is precisely
+     * what took the window out of Clutter's picking altogether and left even
+     * the part still lying flat unable to take a drop. Zero opacity does the
+     * first without the second: Clutter.Clone paints its source through an
+     * opacity override, so the clone still comes out solid, and Mutter only
+     * lets a window occlude what is under it while its paint opacity is full,
+     * so the windows the fold reveals go on drawing. */
+    _dim(actor) {
+        if (this._dimmed.has(actor))
+            return;
+        this._dimmed.set(actor, actor.opacity);
+        actor.opacity = 0;
+    }
+
+    _undim(actor) {
+        if (!this._dimmed.has(actor))
+            return;
+        actor.opacity = this._dimmed.get(actor);
+        this._dimmed.delete(actor);
     }
 
     /* Restore only what we hid, and only if the window still wants to be on

@@ -7,7 +7,7 @@
  */
 'use strict';
 
-import { sub, rectEdges } from './geometry.js';
+import { sub, rectEdges, signedDistance } from './geometry.js';
 import {
     NORMAL, TRANSIENT, FOLDED, DISCARDED,
     anchorFoldLine, pushFoldLine, visibleFraction,
@@ -252,8 +252,32 @@ export class Session {
                  * swallows it, so it is nearly gone by the time it is
                  * discarded rather than blinking out at full strength. */
                 fade: this._fade(win),
+                /* Whether the window itself should still be taking the
+                 * pointer where the pointer is now. */
+                acceptsPointer: this._acceptsPointer(win),
             };
         });
+    }
+
+    /* Is the pointer over the window, or over what the window used to cover?
+     *
+     * Redirecting the drop is the whole technique, and folding a window is how
+     * it is asked for — but a fold only ever swallows part of a window. The
+     * part still lying flat is still the window, and has to go on taking drops
+     * like any other. This is the same rule pointOccluded() applies to
+     * crossings, asked of the pointer rather than of a crossing point: a
+     * folded window covers only its kept side.
+     *
+     * It comes out as one boolean rather than as a region because that is all
+     * the renderer can act on. Clutter picks whole actors, so the finest thing
+     * it can say is whether this window takes the pointer where the pointer
+     * actually is — which is the only place anything ever asks. */
+    _acceptsPointer(win) {
+        if (win.state === DISCARDED)
+            return false;
+        if (win.state !== FOLDED || !win.line || !this.lastPoint)
+            return true;
+        return signedDistance(win.line, this.lastPoint) < 0;
     }
 
     /* Only fades toward a discard that is actually going to happen: with
