@@ -7,7 +7,7 @@
  */
 'use strict';
 
-import { sub, rectEdges, signedDistance } from './geometry.js';
+import { sub, scale, makeLine, rectEdges, signedDistance } from './geometry.js';
 import {
     NORMAL, TRANSIENT, FOLDED, DISCARDED,
     anchorFoldLine, pushFoldLine, visibleFraction,
@@ -17,7 +17,7 @@ import {
 import { evaluate, makeAnimation, PRESETS } from './animation.js';
 import { makeEdgeBoundaries, makeFoldBoundary, findCrossings } from './crossing.js';
 import { computeIntents } from './gesture.js';
-import { windowsAbove, windowsBelow, enforceFoldOrder, pointOccluded } from './coherency.js';
+import { windowsAbove, windowsBelow, enforceFoldOrder, pointOccluded, foldGroup } from './coherency.js';
 
 export const DEFAULT_CONFIG = {
     transientTimeoutMs: 500,
@@ -28,6 +28,9 @@ export const DEFAULT_CONFIG = {
     rotationLerp: 0.1,
     discardThreshold: 0.20,
     discardEnabled: true,
+    /* How far apart the creases of two windows folded together are drawn.
+     * A sheet's thickness; see _drawnLines. */
+    sheetOffsetPx: 1.5,
 };
 
 export class Session {
@@ -241,13 +244,20 @@ export class Session {
     }
 
     describe() {
+        const drawn = this._drawnLines();
         return this.order.map(id => {
             const win = this.states.get(id);
             return {
                 id: win.id,
                 rect: win.rect,
                 state: win.state,
-                line: win.line,
+                /* Where the crease is drawn, which is a sheet's thickness away
+                 * from where the fold actually is for every window but the top
+                 * one — see _drawnLines. Everything that asks where the fold IS
+                 * rather than where it looks — the boundaries the pointer
+                 * pushes against, the occlusion test, the fade, whether the
+                 * window still takes the pointer — reads win.line instead. */
+                line: drawn.get(id) ?? win.line,
                 /* How solid the window should look. Falls away as the fold
                  * swallows it, so it is nearly gone by the time it is
                  * discarded rather than blinking out at full strength. */
@@ -257,6 +267,50 @@ export class Session {
                 acceptsPointer: this._acceptsPointer(win),
             };
         });
+    }
+
+    /* Where each crease is drawn, as against where the fold is.
+     *
+     * Paper has thickness. Windows folded along one crease are a stack of
+     * sheets, and a stack does not fold along a single line: each sheet has to
+     * bend around the ones inside it, so its crease comes to rest a sheet's
+     * thickness further round than theirs. Drawn on one exact line instead,
+     * any number of windows folded together read as a single sheet — the whole
+     * point of folding the stack rather than the window is lost.
+     *
+     * The lowest sheet in the stack is the one that ends up outermost once the
+     * fold turns the stack over (see flapPaintOrder), so it is the one that
+     * has to reach furthest around, and its crease is drawn deepest into the
+     * window. Working down from the top of each fold, that is one sheet's
+     * offset per window.
+     *
+     * Per fold, not per screen: two windows folded along creases of their own
+     * are not one stack, and nothing about one says where the other's paper
+     * ends.
+     *
+     * Drawing-only, deliberately. The fold the pointer pushes against, the
+     * area that decides a discard and the side of the crease the drop lands on
+     * are all still the one crease the core has been keeping all along; this
+     * is how thick the paper looks, not where the fold is. */
+    _drawnLines() {
+        const depths = new Map();
+        const out = new Map();
+        for (let i = this.order.length - 1; i >= 0; i--) {
+            const win = this.states.get(this.order[i]);
+            if (!win || !win.line)
+                continue;
+            if (win.state !== FOLDED && win.state !== DISCARDED)
+                continue;
+            const fold = foldGroup(win, win.id);
+            const depth = depths.get(fold) ?? 0;
+            depths.set(fold, depth + 1);
+            if (depth === 0)
+                continue;
+            const back = depth * this.config.sheetOffsetPx;
+            out.set(win.id, makeLine(sub(win.line.point, scale(win.line.normal, back)),
+                win.line.normal));
+        }
+        return out;
     }
 
     /* Is the pointer over the window, or over what the window used to cover?

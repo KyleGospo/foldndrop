@@ -1,5 +1,5 @@
 /* Fold n' Drop — GPL-3.0. Tests for the whole fold session; no gi imports. */
-import { describe, it, assert, assertEqual } from './harness.js';
+import { describe, it, assert, assertEqual, assertClose } from './harness.js';
 import { vec, makeLine, signedDistance, lineChordInRect } from '../src/core/geometry.js';
 import {
     NORMAL, TRANSIENT, FOLDED, DISCARDED,
@@ -579,6 +579,72 @@ function foldMidRightEdge(session) {
     return session.updatePointer(vec(960, 340), 48);  // back in: confirm
 }
 
+/* Fold `mid` and push until its crease has picked `wide` up as well. */
+function carryWide(s) {
+    foldMidRightEdge(s);
+    for (let i = 0; i < 24; i++) {
+        const desc = s.updatePointer(vec(950 - i * 16, 340 + i * 3), 64 + i * 16);
+        if (stateOf(desc, 'wide') === FOLDED)
+            return desc;
+    }
+    return null;
+}
+
+/* Everything a description says apart from where the creases are drawn. */
+const strip = desc => desc.map(({ line, ...rest }) => rest);
+const creases = s => [...s.states.values()].map(w => w.line);
+
+describe('session: paper has thickness', () => {
+    it('draws a lone fold on exactly the crease the core is keeping', () => {
+        const s = new Session({ discardEnabled: false });
+        s.begin(UNFOLD_STACK, vec(100, 50), 0);
+        const desc = foldOver(s);
+        assertEqual(stateOf(desc, 'over'), FOLDED);
+        assertEqual(lineOf(desc, 'over'), s.states.get('over').line);
+    });
+
+    /* The lower window is the one that ends up outermost once the fold turns
+     * the stack over, so it is the one that has to reach furthest round. */
+    it('draws the lower of two windows folded together one sheet deeper', () => {
+        const s = new Session({ discardEnabled: false });
+        s.begin(CASCADE_REACH, vec(900, 300), 0);
+        const desc = carryWide(s);
+        assert(desc !== null, 'the crease never picked the wide window up');
+        const lower = lineOf(desc, 'mid');
+        const upper = lineOf(desc, 'wide');
+        assertEqual(upper, s.states.get('wide').line);
+        assertEqual(lower.normal, upper.normal);
+        assertClose(signedDistance(lower, upper.point), s.config.sheetOffsetPx);
+    });
+
+    it('puts them back on one line when the paper has no thickness', () => {
+        const s = new Session({ discardEnabled: false, sheetOffsetPx: 0 });
+        s.begin(CASCADE_REACH, vec(900, 300), 0);
+        const desc = carryWide(s);
+        assert(desc !== null, 'the crease never picked the wide window up');
+        assertEqual(lineOf(desc, 'mid'), lineOf(desc, 'wide'));
+    });
+
+    /* Thickness is how the fold looks, not where it is. Nothing the session
+     * decides from the crease — what the pointer pushes against, how solid a
+     * window is drawn, whether it has been folded away far enough to discard,
+     * which side of the fold the drop lands on — may move because the paper
+     * was drawn thicker. */
+    it('changes nothing but where the creases are drawn', () => {
+        const thin = new Session({ sheetOffsetPx: 0 });
+        thin.begin(CASCADE_REACH, vec(900, 300), 0);
+        const thinDesc = carryWide(thin);
+
+        const thick = new Session({ sheetOffsetPx: 40 });
+        thick.begin(CASCADE_REACH, vec(900, 300), 0);
+        const thickDesc = carryWide(thick);
+
+        assert(thinDesc !== null && thickDesc !== null, 'the cascade did not happen');
+        assertEqual(strip(thickDesc), strip(thinDesc));
+        assertEqual(creases(thick), creases(thin));
+    });
+});
+
 describe('session: a fold only carries the windows its crease runs through', () => {
     it('leaves an overlapping window alone while the crease is nowhere near it', () => {
         const s = new Session({ discardEnabled: false });
@@ -614,7 +680,7 @@ describe('session: a fold only carries the windows its crease runs through', () 
             'the window was picked up by a crease that does not cut it');
     });
 
-    it('keeps a carried window on exactly the crease that carries it', () => {
+    it('keeps a carried window one sheet off the crease that carries it', () => {
         const s = new Session({ discardEnabled: false });
         s.begin(CASCADE_REACH, vec(900, 300), 0);
         foldMidRightEdge(s);
@@ -628,8 +694,12 @@ describe('session: a fold only carries the windows its crease runs through', () 
             assert(lead !== null, 'the leader lost its crease');
             /* Stamping the crease on once at confirm time and leaving
              * enforceFoldOrder to keep it honest let the follower ratchet
-             * hundreds of pixels deeper than the fold it belongs to. */
-            assertEqual(follow, lead, `the carried crease drifted at step ${i}`);
+             * hundreds of pixels deeper than the fold it belongs to. The two
+             * are drawn a sheet apart and must stay exactly that: one crease,
+             * two sheets of paper, and no drift on top of it. */
+            assertEqual(follow.normal, lead.normal, `the carried crease turned at step ${i}`);
+            assertClose(signedDistance(lead, follow.point), s.config.sheetOffsetPx, 1e-9,
+                `the carried crease drifted at step ${i}`);
             compared++;
         }
         assert(compared > 4, `only ${compared} steps had the window carried`);

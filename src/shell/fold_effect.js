@@ -9,16 +9,29 @@
  * the window content sits inside the (larger) actor, so the flap can overhang
  * the window's far edge once the fold passes halfway. The caller is
  * responsible for making the actor large enough to hold everything drawn here;
- * foldPaintBounds() in the core works out how large that is.
+ * foldFlapBounds() in the core works out how large a flap layer has to be.
  *
- * One pass draws all three layers, in the order light hits them: the window's
- * own surface, the shadow the raised flap casts on it, then the flap. They
- * used to be two effects on two clones — the shadow on an actor of its own,
+ * There are three layers, drawn in the order light hits them: the window's
+ * own surface, the shadow the raised flap casts on it, then the flap. One
+ * pass can draw all three. They used to be two effects on two clones — the shadow on an actor of its own,
  * stacked under the flap's — which cost a second clone of every folded window
  * and could not work at all for a lifted corner, because that draws on the
  * real window actor and our overlay sits above it, so the shadow landed on
  * top of the flap it was supposed to fall under. Compositing them here fixes
  * the order by construction and halves the clones.
+ *
+ * A folded window nevertheless has to draw its flap in a different place in
+ * the stack from its surface — the flaps of a folded stack lie in the
+ * opposite order to the windows they came off, see flapPaintOrder() — so
+ * `layers` says which of the three this pass is drawing. A lifted corner
+ * still draws all of them at once, which is the case the shadow's order was
+ * broken in before. The flap and its shadow travel together whichever way it
+ * is split: the shadow belongs under the flap that casts it, wherever that
+ * flap has ended up.
+ *
+ * FOLD_FLAP draws no window pixels at all — the flap is the blank back of the
+ * sheet, mixed from two settings colours — so the actor it runs on needs no
+ * clone under it, and gets none.
  */
 'use strict';
 
@@ -33,9 +46,24 @@ const FRAGMENT_HOOK = Cogl.SnippetHook ? Cogl.SnippetHook.FRAGMENT : Shell.Snipp
 /* Since GNOME 44.2 an offscreen effect does not write the alpha channel by
  * default. This fold depends entirely on alpha: the folded-away region must
  * become transparent so the window underneath shows through. Restoring
- * premultiplied over-blending in vfunc_paint_target is what makes that work. */
+ * premultiplied over-blending in vfunc_paint_target is what makes that work.
+ *
+ * Cogl's own form, with the source taken as premultiplied — which is what
+ * this shader writes. Multiplying the source by its own alpha first, as this
+ * did, is the UNpremultiplied source term, and applying it to a premultiplied
+ * one squares the alpha: a layer laid down at alpha a left the framebuffer at
+ * a*a + (1-a) rather than 1. Nothing on screen showed it, because the display
+ * has no use for the stage's alpha channel — but a screenshot does, and
+ * unpremultiplying by that too-low alpha washed the fold's shadow out by
+ * almost half. The colour term was wrong by the same factor wherever the fold
+ * drew at partial alpha, which is every flap that has begun to fade. */
 const PREMULTIPLIED_OVER =
-    'RGBA = ADD (SRC_COLOR * (SRC_COLOR[A]), DST_COLOR * (1-SRC_COLOR[A]))';
+    'RGBA = ADD (SRC_COLOR, DST_COLOR * (1-SRC_COLOR[A]))';
+
+/* Which of the fold's layers a pass draws. */
+export const FOLD_ALL = 'all';
+export const FOLD_SURFACE = 'surface';
+export const FOLD_FLAP = 'flap';
 
 const DECLARATIONS = `
 uniform vec2 uSize;
@@ -56,6 +84,9 @@ uniform float uFade;
 /* The actor's own paint opacity, sampled each frame in vfunc_paint_target. */
 uniform float uActorOpacity;
 uniform float uEnabled;
+/* Which layers this pass draws; either may be off, never both. */
+uniform float uDrawSurface;
+uniform float uDrawFlap;
 
 /* Width of the darker rim around the flap, matching the reference's 5 px
  * inset between the back of the sheet and its border. */
@@ -161,7 +192,8 @@ if (uEnabled > 0.5) {
          * this safe — the in-place path sizes uSize to the actor's own box,
          * and the cloned path pads the container with offscreen texture that
          * is already transparent out there. */
-        result = texture2D(cogl_sampler0, p / uSize);
+        if (uDrawSurface > 0.5)
+            result = texture2D(cogl_sampler0, p / uSize);
 
         /* The shadow the raised flap casts. Flat alpha under the blur, as in
          * the reference: fading it with depth made the one part that is
@@ -169,11 +201,16 @@ if (uEnabled > 0.5) {
          * of it. Black over the surface, in premultiplied form — it works both
          * over window pixels, which it darkens, and over the transparent
          * padding beyond the window edge, where it lays down translucent black
-         * for whatever is stacked below to show through. */
+         * for whatever is stacked below to show through. That second case is
+         * the only one a flap layer of its own ever meets, and it is what
+         * keeps the shadow falling on the windows the flap has ended up over
+         * rather than only on the one it came off. */
         float span = max(uContentSize.x, uContentSize.y) * SHADE_SPAN_FRACTION;
-        float shade = uShadowAlpha * shadowCoverage(p, span);
-        result = vec4(result.rgb * (1.0 - shade),
-                      result.a * (1.0 - shade) + shade);
+        if (uDrawFlap > 0.5) {
+            float shade = uShadowAlpha * shadowCoverage(p, span);
+            result = vec4(result.rgb * (1.0 - shade),
+                          result.a * (1.0 - shade) + shade);
+        }
 
         /* The flap: the back of the sheet.
          *
@@ -189,16 +226,18 @@ if (uEnabled > 0.5) {
          * sheet stays readable while what it is covering goes. */
         result *= uFade * uFade;
 
-        vec2 flapSample = p - (1.0 + 1.0 / uFlapScale) * s * uFoldNormal;
-        float flap = contentCoverage(flapSample, 0.0);
-        if (flap > 0.0) {
-            float depth = -s;
-            vec3 colour = mix(uBorder, uPanel, contentCoverage(flapSample, BORDER_PX));
-            /* Darkens away from the crease, and catches the light at it. */
-            colour *= 1.0 - uShading * clamp(depth / span, 0.0, 1.0);
-            colour *= 1.0 + CREASE_HIGHLIGHT * exp(-depth / CREASE_FALLOFF_PX);
-            /* Premultiplied, so an opaque colour mixes by coverage directly. */
-            result = mix(result, vec4(colour, 1.0) * uFade, flap);
+        if (uDrawFlap > 0.5) {
+            vec2 flapSample = p - (1.0 + 1.0 / uFlapScale) * s * uFoldNormal;
+            float flap = contentCoverage(flapSample, 0.0);
+            if (flap > 0.0) {
+                float depth = -s;
+                vec3 colour = mix(uBorder, uPanel, contentCoverage(flapSample, BORDER_PX));
+                /* Darkens away from the crease, and catches the light at it. */
+                colour *= 1.0 - uShading * clamp(depth / span, 0.0, 1.0);
+                colour *= 1.0 + CREASE_HIGHLIGHT * exp(-depth / CREASE_FALLOFF_PX);
+                /* Premultiplied, so an opaque colour mixes by coverage directly. */
+                result = mix(result, vec4(colour, 1.0) * uFade, flap);
+            }
         }
     }
     /* Everything above is premultiplied, so scaling the whole vector scales
@@ -212,6 +251,15 @@ if (uEnabled > 0.5) {
      * silently doing nothing, so a discarded window blinked out rather than
      * fading. */
     cogl_color_out = result * uActorOpacity;
+} else if (uDrawFlap > 0.5 && uDrawSurface < 0.5) {
+    /* A flap layer has no window under it: everything it draws, it draws from
+     * the crease. Without one there is nothing for it to draw, and leaving
+     * cogl_color_out alone would hand back whatever the empty actor painted
+     * rather than nothing at all. Spelled out as a flap pass rather than as
+     * "not a surface pass" so that an effect nobody has called setFold on yet
+     * — every uniform still zero — falls through to drawing the actor, which
+     * is what a window with no fold on it should look like. */
+    cogl_color_out = vec4(0.0);
 }
 `;
 
@@ -235,7 +283,7 @@ class FoldEffect extends Shell.GLSLEffect {
     setFold({
         size, contentOrigin, contentSize, line, shading,
         flapScale = 1.0, panel, border, shadowAlpha, shadowBlur = 0,
-        cornerRadius = 0, fade = 1,
+        cornerRadius = 0, fade = 1, layers = FOLD_ALL,
     }) {
         this.set_uniform_float(this.get_uniform_location('uSize'), 2, [size.width, size.height]);
         this.set_uniform_float(this.get_uniform_location('uContentOrigin'), 2,
@@ -253,6 +301,10 @@ class FoldEffect extends Shell.GLSLEffect {
         this.set_uniform_float(this.get_uniform_location('uShadowBlur'), 1, [shadowBlur]);
         this.set_uniform_float(this.get_uniform_location('uCornerRadius'), 1, [cornerRadius]);
         this.set_uniform_float(this.get_uniform_location('uFade'), 1, [fade]);
+        this.set_uniform_float(this.get_uniform_location('uDrawSurface'), 1,
+            [layers === FOLD_FLAP ? 0.0 : 1.0]);
+        this.set_uniform_float(this.get_uniform_location('uDrawFlap'), 1,
+            [layers === FOLD_SURFACE ? 0.0 : 1.0]);
 
         if (line) {
             this.set_uniform_float(this.get_uniform_location('uFoldPoint'), 2,

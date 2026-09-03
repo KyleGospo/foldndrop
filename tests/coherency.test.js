@@ -1,8 +1,8 @@
 /* Fold n' Drop — GPL-3.0. Tests for multi-fold stacking coherency; no gi imports. */
 import { describe, it, assert, assertEqual, assertClose } from './harness.js';
 import { vec, makeLine, signedDistance } from '../src/core/geometry.js';
-import { NORMAL, FOLDED } from '../src/core/fold.js';
-import { windowsAbove, windowsBelow, enforceFoldOrder } from '../src/core/coherency.js';
+import { NORMAL, TRANSIENT, FOLDED, DISCARDED } from '../src/core/fold.js';
+import { windowsAbove, windowsBelow, enforceFoldOrder, flapPaintOrder } from '../src/core/coherency.js';
 
 const ORDER = ['bottom', 'middle', 'top'];
 const RECT = { x: 0, y: 0, width: 200, height: 100 };
@@ -33,6 +33,50 @@ describe('coherency: stacking helpers', () => {
     it('returns nothing for an unknown window', () => {
         assertEqual(windowsAbove(ORDER, 'ghost'), []);
         assertEqual(windowsBelow(ORDER, 'ghost'), []);
+    });
+});
+
+describe('coherency: the order the flaps are drawn in', () => {
+    const LINE = makeLine(vec(150, 0), vec(1, 0));
+
+    function described(entries) {
+        return entries.map(([id, state, line]) => ({ id, state, line: line ?? null }));
+    }
+
+    /* Folding a stack of paper turns the folded part over, so the sheet that
+     * was on top of the stack ends up at the bottom of the pile of flaps. */
+    it('draws a lower window\'s flap over the flap of the window above it', () => {
+        const order = flapPaintOrder(described([
+            ['bottom', FOLDED, LINE],
+            ['top', FOLDED, LINE],
+        ]));
+        assertEqual(order, ['top', 'bottom']);
+    });
+
+    it('leaves out windows that have no flap', () => {
+        const order = flapPaintOrder(described([
+            ['flat', NORMAL],
+            ['lifted', TRANSIENT],
+            ['folded', FOLDED, LINE],
+        ]));
+        assertEqual(order, ['folded']);
+    });
+
+    /* FOLDED promises a crease and the core keeps that promise, but a window
+     * without one has no flap to place, and placing it anyway would leave the
+     * pile ordered around an actor that is drawing nothing. */
+    it('leaves out a folded window with no crease', () => {
+        assertEqual(flapPaintOrder(described([['folded', FOLDED, null]])), []);
+    });
+
+    /* A discarded window is still fading out along the crease that swallowed
+     * it, so it keeps its place in the pile while it goes. */
+    it('keeps a discarded window in the pile while it fades', () => {
+        const order = flapPaintOrder(described([
+            ['bottom', DISCARDED, LINE],
+            ['top', FOLDED, LINE],
+        ]));
+        assertEqual(order, ['top', 'bottom']);
     });
 });
 

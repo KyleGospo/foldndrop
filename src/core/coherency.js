@@ -14,6 +14,38 @@
 import { add, scale, makeLine, signedDistance, rectCorners, rectsOverlap, pointStrictlyInRect, clipPolygonByLine } from './geometry.js';
 import { FOLDED, DISCARDED } from './fold.js';
 
+/* The order the flaps are drawn in, bottom of the pile first.
+ *
+ * Folding a stack of paper turns the folded part of it over. The sheet that
+ * was on top of the stack has the corner that ends up at the bottom of the
+ * pile of flaps, and the lowest sheet's corner ends up on top of it — so the
+ * flaps lie in exactly the opposite order to the windows they came off, and
+ * the whole pile rests on top of everything still lying flat.
+ *
+ * Drawing each flap with its own window instead, which is where it started,
+ * put the flap of an upper window over the flap of a lower one: two sheets
+ * that had just been folded together, with the wrong one on top.
+ *
+ * Takes what describe() hands the renderer — {id, state, line} in
+ * bottom-to-top stacking order — so the rule can be read off the same
+ * description the drawing is. */
+export function flapPaintOrder(description) {
+    const flaps = [];
+    for (const win of description) {
+        /* No crease, no flap. FOLDED promises one and the core keeps that
+         * promise; a window without one has nothing to place, and placing it
+         * anyway would order the pile around an actor drawing nothing. */
+        if (!win.line)
+            continue;
+        /* A discarded window is still fading out along the crease that
+         * swallowed it, so it keeps its place in the pile while it goes. */
+        if (win.state !== FOLDED && win.state !== DISCARDED)
+            continue;
+        flaps.push(win.id);
+    }
+    return flaps.reverse();
+}
+
 export function windowsAbove(order, id) {
     const i = order.indexOf(id);
     if (i < 0)

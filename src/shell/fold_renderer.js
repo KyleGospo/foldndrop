@@ -9,14 +9,29 @@
  * that were stacked over it, which looks exactly like the window raising
  * itself, and made clone-versus-clone order depend on which was folded first.
  *
+ * A fold is drawn in two layers, because the two halves of a folded sheet do
+ * not stay in the same place in the stack:
+ *
+ *   the sheet — the window's own pixels, cut off at the crease. Drawn by a
+ *               clone directly over the window actor, as above.
+ *   the flap  — the back of the sheet, and the shadow it casts. Folding turns
+ *               the folded part of a stack over, so the flaps end up in the
+ *               opposite order to the windows they came off, piled on top of
+ *               every sheet: see flapPaintOrder(). Drawing a flap with its own
+ *               window instead put the flap of an upper window over the flap
+ *               of the window below it, which is not what happens when you
+ *               fold two sheets of paper together.
+ *
  *   TRANSIENT — effect on the real actor, which stays visible and reactive.
- *               It is only a preview; the window must still accept a drop.
- *   FOLDED    — a clone draws the fold; the real actor is left in place at
- *               zero opacity so that it goes on being what Clutter picks.
- *               Only where the pointer is over the folded-away part is it
- *               taken out of the pick, and then the drop falls through to the
- *               window underneath. That is the whole mechanism.
- *   DISCARDED — clone faded out, real actor gone from the pick entirely.
+ *               It is only a preview; the window must still accept a drop, and
+ *               a lifted corner is one window's alone, so it draws both layers
+ *               in place with no clone and no reordering.
+ *   FOLDED    — the two layers above draw the fold; the real actor is left in
+ *               place at zero opacity so that it goes on being what Clutter
+ *               picks. Only where the pointer is over the folded-away part is
+ *               it taken out of the pick, and then the drop falls through to
+ *               the window underneath. That is the whole mechanism.
+ *   DISCARDED — both layers faded out, real actor gone from the pick entirely.
  *
  * The two ways this file can do lasting harm are leaving a real actor hidden
  * and leaving one transparent, so every actor it hides goes in _hidden, every
@@ -26,8 +41,9 @@
 
 import Clutter from 'gi://Clutter';
 
-import { FoldEffect } from './fold_effect.js';
+import { FoldEffect, FOLD_SURFACE, FOLD_FLAP } from './fold_effect.js';
 import { NORMAL, TRANSIENT, FOLDED, DISCARDED, foldPaintBounds } from '../core/fold.js';
+import { flapPaintOrder } from '../core/coherency.js';
 
 const EFFECT_NAME = 'foldndrop-fold';
 const MIN_PADDING = 8;
@@ -41,7 +57,8 @@ export class FoldRenderer {
         this._settings = settings;
         /* A drag is in progress and sync() has windows to draw. */
         this._active = false;
-        this._entries = new Map();   // id -> {actor, container, clone, effect, mode}
+        // id -> {actor, container, clone, effect, flap, flapEffect, mode}
+        this._entries = new Map();
         this._hidden = new Set();
         this._dimmed = new Map();    // actor -> the opacity it had before we dimmed it
         this._pendingDone = null;
@@ -54,6 +71,7 @@ export class FoldRenderer {
             this._entries.set(win.id, {
                 actor: win.actor,
                 container: null, clone: null, effect: null,
+                flap: null, flapEffect: null,
                 mode: NORMAL,
             });
     }
@@ -80,10 +98,14 @@ export class FoldRenderer {
                 break;
             }
         }
+        /* After the loop, not inside it: where a flap belongs depends on every
+         * other window's state, so there is nothing to order until they have
+         * all been brought up to date. */
+        this._restackFlaps(description);
     }
 
     _toNormal(entry) {
-        this._dropClone(entry);
+        this._dropLayers(entry);
         this._dropInPlaceEffect(entry);
         this._undim(entry.actor);
         this._show(entry.actor);
@@ -91,7 +113,7 @@ export class FoldRenderer {
     }
 
     _toInPlace(entry, win) {
-        this._dropClone(entry);
+        this._dropLayers(entry);
         this._undim(entry.actor);
         this._show(entry.actor);
         if (!entry.effect || entry.mode !== TRANSIENT) {
@@ -135,9 +157,18 @@ export class FoldRenderer {
         const [ax, ay] = entry.actor.get_position();
         const look = this._appearance(entry);
 
-        /* The container has to hold the actor AND everything the fold paints
-         * outside it: the flap, and the blurred shadow it casts. The core
-         * works that box out exactly.
+        /* Both layers get the same box, and it is the box the whole fold
+         * paints in: the window, the flap, and the blurred shadow. The core
+         * works it out exactly.
+         *
+         * Identical is the point. Clutter renders an effect's actor to an
+         * offscreen texture a few pixels larger than the actor, and the
+         * shader's only handle on where it is drawing is a texture coordinate
+         * across that texture — so actor-local pixels come out a pixel or two
+         * off, harmlessly, as long as everything drawn together is off by the
+         * same amount. Two boxes of different sizes are off by different
+         * amounts, which would leave the flap hinged a pixel or two away from
+         * the crease the sheet is cut along, with a seam between them.
          *
          * The old bound measured how far the flap reached along the crease
          * normal, which is not the same question. The displacement is along
@@ -159,30 +190,58 @@ export class FoldRenderer {
             entry.container.add_child(entry.clone);
             entry.effect = new FoldEffect();
             entry.container.add_effect_with_name(EFFECT_NAME, entry.effect);
+            /* Without this the clone's own paint volume, not the box set
+             * below, is what decides how big the offscreen texture is — and
+             * then the sheet and the flap are being drawn through two
+             * different mappings again. Clipping to the allocation pins it to
+             * the box, which is what both layers agree on. */
+            entry.container.set_clip_to_allocation(true);
+
+            /* The flap gets an actor of its own so that it can be stacked
+             * apart from the window it came off — that is the whole reason
+             * there are two layers. It carries no clone: the back of a sheet
+             * is blank, so the flap and its shadow are drawn from the crease
+             * and the window's outline alone, with nothing for the shader to
+             * sample. An actor with nothing in it still gets an offscreen
+             * texture the size of its box, which is all the shader needs. */
+            entry.flap = new Clutter.Actor({ reactive: false });
+            entry.flapEffect = new FoldEffect();
+            entry.flap.add_effect_with_name(EFFECT_NAME, entry.flapEffect);
+            entry.flap.set_clip_to_allocation(true);
         }
         this._restack(entry);
 
-        entry.container.set_position(cx, cy);
-        entry.container.set_size(cw, ch);
+        for (const layer of this._layers(entry)) {
+            layer.set_position(cx, cy);
+            layer.set_size(cw, ch);
+        }
         entry.clone.set_position(ax - cx, ay - cy);
         entry.clone.set_size(aw, ah);
+
         if (wasDiscarded) {
             /* Coming back from having been pushed away entirely. Fade it in
              * under the unfold rather than letting it snap to full opacity. */
-            entry.container.remove_all_transitions();
-            entry.container.ease({
-                opacity: 255,
-                duration: this._settings.discardFadeMs,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-            });
+            for (const layer of this._layers(entry)) {
+                layer.remove_all_transitions();
+                layer.ease({
+                    opacity: 255,
+                    duration: this._settings.discardFadeMs,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                });
+            }
         } else if (entry.mode !== FOLDED) {
-            entry.container.opacity = 255;
+            for (const layer of this._layers(entry))
+                layer.opacity = 255;
         }
 
-        entry.effect.setFold({
+        /* One fold, drawn twice: the same geometry, split only by which
+         * layers each pass is allowed to put on screen. */
+        const fold = {
             size: { width: cw, height: ch },
-            /* The content box is the window's frame, not the actor's box; see
-             * the comment in _toInPlace for why. */
+            /* The content box is the window's frame, not the actor's box. On
+             * client-side-decorated windows the actor carries an invisible
+             * shadow margin; treating that as content mirrors the flap out
+             * over empty pixels and rims it with a transparent band. */
             contentOrigin: { x: win.rect.x - cx, y: win.rect.y - cy },
             contentSize: { width: win.rect.width, height: win.rect.height },
             line: this._toLocal(win.line, cx, cy),
@@ -190,7 +249,9 @@ export class FoldRenderer {
              * by the time it is discarded rather than blinking out solid. */
             fade: win.fade ?? 1,
             ...look,
-        });
+        };
+        entry.effect.setFold({ ...fold, layers: FOLD_SURFACE });
+        entry.flapEffect.setFold({ ...fold, layers: FOLD_FLAP });
 
         entry.mode = FOLDED;
     }
@@ -198,17 +259,68 @@ export class FoldRenderer {
     _toDiscarded(entry) {
         this._dim(entry.actor);
         this._hide(entry.actor);
-        if (entry.container && entry.mode !== DISCARDED) {
-            entry.container.ease({
-                opacity: 0,
-                duration: this._settings.discardFadeMs,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-            });
+        if (entry.mode !== DISCARDED) {
+            for (const layer of this._layers(entry)) {
+                layer.ease({
+                    opacity: 0,
+                    duration: this._settings.discardFadeMs,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                });
+            }
         }
         entry.mode = DISCARDED;
     }
 
-    /* Keep the clone immediately above the window actor it stands in for, so a
+    /* The two actors a folded window is drawn with, in whatever order they
+     * happen to exist. Everything that treats a fold as one thing — fading it
+     * out, bringing it back — goes through here, so neither half can be left
+     * behind at the wrong opacity. */
+    _layers(entry) {
+        const out = [];
+        if (entry.container)
+            out.push(entry.container);
+        if (entry.flap)
+            out.push(entry.flap);
+        return out;
+    }
+
+    /* Pile the flaps up over the sheets, in the order folding leaves them in.
+     *
+     * The core decides the order (flapPaintOrder); this puts the actors in it.
+     * The pile is anchored to the topmost folded window's own sheet rather
+     * than to the top of the screen: a window the fold never reached is still
+     * lying over all of this, and lifting a flap through it would look like
+     * the window underneath raising itself — the very thing keeping each
+     * clone with its own actor is there to avoid.
+     *
+     * Re-checked every frame, for the same reason _restack is: the flaps have
+     * to move when the stack does. The comparisons are what make that cheap. */
+    _restackFlaps(description) {
+        const ids = flapPaintOrder(description)
+            .filter(id => this._entries.get(id)?.flap);
+        if (ids.length === 0)
+            return;
+        /* flapPaintOrder hands back the bottom of the pile first, which is the
+         * topmost window's flap — so the first entry is also the one whose
+         * sheet the whole pile rests on. */
+        const anchor = this._entries.get(ids[0]).container;
+        const parent = anchor?.get_parent();
+        if (!parent)
+            return;
+        let below = anchor;
+        for (const id of ids) {
+            const flap = this._entries.get(id).flap;
+            if (flap.get_parent() !== parent) {
+                flap.get_parent()?.remove_child(flap);
+                parent.add_child(flap);
+            }
+            if (flap.get_previous_sibling() !== below)
+                parent.set_child_above_sibling(flap, below);
+            below = flap;
+        }
+    }
+
+    /* Keep the sheet immediately above the window actor it stands in for, so a
      * folded window draws exactly where the real one would have.
      *
      * Re-checked every frame rather than set once: Mutter reorders
@@ -290,7 +402,7 @@ export class FoldRenderer {
         const entry = this._entries.get(id);
         if (!entry)
             return;
-        this._dropClone(entry);
+        this._dropLayers(entry);
         this._dropInPlaceEffect(entry);
         /* The window is gone, so forget its actor rather than trying to
          * restore it later. removeWindow is called when a window is
@@ -303,7 +415,7 @@ export class FoldRenderer {
 
     restoreAll() {
         for (const entry of this._entries.values()) {
-            this._dropClone(entry);
+            this._dropLayers(entry);
             this._dropInPlaceEffect(entry);
         }
         this._entries.clear();
@@ -404,14 +516,18 @@ export class FoldRenderer {
         actor.show();
     }
 
-    _dropClone(entry) {
-        if (!entry.container)
-            return;
-        entry.container.remove_all_transitions();
-        entry.container.destroy();
+    /* Let go of both halves of a fold at once. There is no state in which one
+     * of them should outlive the other: the flap is the back of the sheet. */
+    _dropLayers(entry) {
+        for (const layer of this._layers(entry)) {
+            layer.remove_all_transitions();
+            layer.destroy();
+        }
         entry.container = null;
         entry.clone = null;
         entry.effect = null;
+        entry.flap = null;
+        entry.flapEffect = null;
     }
 
     _dropInPlaceEffect(entry) {
